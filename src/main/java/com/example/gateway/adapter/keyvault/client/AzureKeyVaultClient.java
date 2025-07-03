@@ -6,43 +6,37 @@ import com.example.gateway.exception.KeyVaultException;
 import com.example.gateway.security.ManagedIdentityTokenProvider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.oauth2.sdk.Response;
+import java.io.IOException;
+import java.time.Duration;
+import java.util.concurrent.ConcurrentHashMap;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-
-import java.io.IOException;
-import java.time.Duration;
-import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.web.bind.annotation.ResponseBody;
 
 /**
  * Azure Key Vault Client using Managed Identity
- *
- * Features:
- * - Managed Identity authentication (no secrets)
- * - Secret caching with TTL
- * - Circuit breaker pattern
- * - Optimized HTTP client usage
+ * <p>
+ * Features: - Managed Identity authentication (no secrets) - Secret caching with TTL - Circuit
+ * breaker pattern - Optimized HTTP client usage
  */
 @Slf4j
 @Component
 public class AzureKeyVaultClient {
 
+  private static final Duration CACHE_TTL = Duration.ofMinutes(5);
+  private static final long CIRCUIT_RESET_TIMEOUT = 30000;
   private final OkHttpClient httpClient;
   private final ObjectMapper objectMapper;
   private final ManagedIdentityTokenProvider tokenProvider;
   private final String keyVaultUrl;
   private final String apiVersion = "7.4";
-
   private final ConcurrentHashMap<String, CachedSecret> secretCache = new ConcurrentHashMap<>();
-  private static final Duration CACHE_TTL = Duration.ofMinutes(5);
-
   private volatile boolean circuitOpen = false;
   private volatile long circuitOpenTime = 0;
-  private static final long CIRCUIT_RESET_TIMEOUT = 30000;
 
   public AzureKeyVaultClient(
       @Value("${azure.keyvault.uri}") String keyVaultUrl,
@@ -61,7 +55,8 @@ public class AzureKeyVaultClient {
   public String getSecret(String secretName) {
     CachedSecret cached = secretCache.get(secretName);
     if (cached != null && !cached.isExpired()) {
-      log.debug("Returning cached secret: {}", secretName);
+      log.debug("Returning cached secret: {}",
+                secretName);
       return cached.value;
     }
 
@@ -71,23 +66,28 @@ public class AzureKeyVaultClient {
 
     try {
       String secretValue = fetchSecretFromKeyVault(secretName);
-      secretCache.put(secretName, new CachedSecret(secretValue));
+      secretCache.put(secretName,
+                      new CachedSecret(secretValue));
       circuitOpen = false;
       return secretValue;
 
     } catch (Exception e) {
       handleKeyVaultError(e);
-      throw new KeyVaultException("Failed to retrieve secret", e);
+      throw new KeyVaultException("Failed to retrieve secret",
+                                  e);
     }
   }
 
   private String fetchSecretFromKeyVault(String secretName) throws IOException {
     String url = String.format("%s/secrets/%s?api-version=%s",
-                               keyVaultUrl, secretName, apiVersion);
+                               keyVaultUrl,
+                               secretName,
+                               apiVersion);
 
     Request request = new Request.Builder()
         .url(url)
-        .header("Authorization", "Bearer " + tokenProvider.getAccessToken())
+        .header("Authorization",
+                "Bearer " + tokenProvider.getAccessToken())
         .get()
         .build();
 
@@ -102,7 +102,8 @@ public class AzureKeyVaultClient {
       }
 
       SecretResponse secretResponse = objectMapper.readValue(
-          body.string(), SecretResponse.class);
+          body.string(),
+          SecretResponse.class);
 
       return secretResponse.value();
     }
@@ -123,13 +124,15 @@ public class AzureKeyVaultClient {
   }
 
   private void handleKeyVaultError(Exception e) {
-    log.error("Key Vault error occurred", e);
+    log.error("Key Vault error occurred",
+              e);
     circuitOpen = true;
     circuitOpenTime = System.currentTimeMillis();
     log.warn("Circuit breaker opened due to Key Vault failure");
   }
 
   private static class CachedSecret {
+
     final String value;
     final long expiryTime;
 
