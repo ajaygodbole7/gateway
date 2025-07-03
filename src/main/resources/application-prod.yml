@@ -1,0 +1,23 @@
+spring:
+  redis:
+    mode: cluster
+    cluster:
+      nodes: ${REDIS_CLUSTER_NODES}
+    password: ${REDIS_PASSWORD}
+
+app:
+  frontend:
+    url: ${FRONTEND_URL:https://app.company.com}
+
+  auth:
+    ping:
+      authorization-uri: ${PING_AUTH_URI:https://auth.company.com/as/authorization.oauth2}
+      token-uri: ${PING_TOKEN_URI:https://auth.company.com/as/token.oauth2}
+      jwks-uri: ${PING_JWKS_URI:https://auth.company.com/pf/JWKS}
+      issuer-uri: ${PING_ISSUER_URI:https://auth.company.com}
+
+logging:
+  level:
+    com.example.gateway: WARN
+    org.springframework.security: WARN
+    org.springframework.web: WARN

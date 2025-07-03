@@ -1,0 +1,89 @@
+spring:
+  application:
+    name: security-gateway
+
+  redis:
+    mode: ${REDIS_MODE:standalone}
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6380}
+    ssl:
+      enabled: ${REDIS_SSL_ENABLED:true}
+    lettuce:
+      pool:
+        max-active: 50
+        max-idle: 25
+        min-idle: 10
+        max-wait: 2000ms
+    cluster:
+      nodes: ${REDIS_CLUSTER_NODES:}
+      max-redirects: 3
+  data:
+    redis:
+      timeout: 2000ms
+
+azure:
+  keyvault:
+    uri: ${AZURE_KEYVAULT_URI}
+
+app:
+  frontend:
+    url: ${FRONTEND_URL:http://localhost:3000}
+
+  auth:
+    ping:
+      client-id: ${PING_CLIENT_ID}
+      authorization-uri: ${PING_AUTH_URI}
+      token-uri: ${PING_TOKEN_URI}
+      jwks-uri: ${PING_JWKS_URI}
+      issuer-uri: ${PING_ISSUER_URI}
+
+    allowed-return-paths:
+      - /dashboard
+      - /profile
+      - /settings
+      - /admin
+
+  security:
+    auth:
+      max-failures: 5
+      block-duration-minutes: 15
+
+    session:
+      sliding-window-minutes: 30
+      absolute-timeout-hours: 8
+
+  http:
+    client:
+      max-idle-connections: 20
+      keep-alive-duration: 5
+      max-requests: 100
+      max-requests-per-host: 20
+
+server:
+  port: 8080
+  compression:
+    enabled: true
+  http2:
+    enabled: true
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    com.example.gateway: INFO
+    org.springframework.security: INFO
+    org.springframework.web: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %logger{36} - %msg%n"

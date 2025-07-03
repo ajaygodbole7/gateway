@@ -1,0 +1,28 @@
+spring:
+  profiles:
+    active: test
+
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+
+app:
+  frontend:
+    url: http://localhost:8080
+
+  auth:
+    ping:
+      client-id: test-client-id
+      authorization-uri: https://test-auth.example.com/authorize
+      token-uri: https://test-auth.example.com/token
+      jwks-uri: https://test-auth.example.com/jwks
+      issuer-uri: https://test-auth.example.com
+
+azure:
+  keyvault:
+    uri: https://test-keyvault.vault.azure.net
+
+logging:
+  level:
+    com.example.gateway: DEBUG
+    org.springframework.security: DEBUG
