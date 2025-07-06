@@ -1,5 +1,6 @@
 package com.example.gateway.security.filter;
 
+import com.example.gateway.domain.entity.SessionData;
 import com.example.gateway.service.SessionService;
 import com.example.gateway.util.CookieUtil;
 import jakarta.servlet.FilterChain;
@@ -33,33 +34,61 @@ public class SessionAuthenticationFilter extends OncePerRequestFilter {
   @Override
   protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                   FilterChain filterChain) throws ServletException, IOException {
-
-    log.debug("Processing session authentication for: {} {}",
-              request.getMethod(), request.getRequestURI());
-
     Optional<Cookie> sessionCookie = CookieUtil.getCookie(request, SESSION_COOKIE_NAME);
 
     if (sessionCookie.isPresent()) {
       String sessionId = sessionCookie.get().getValue();
-      log.debug("Found session cookie: {}", sessionId.substring(0, 8) + "***");
 
       try {
-        Optional<Authentication> auth = sessionService.authenticateBySessionId(sessionId, request);
-
-        if (auth.isPresent()) {
-          SecurityContextHolder.getContext().setAuthentication(auth.get());
-          log.debug("Authentication successful for user: {}", auth.get().getName());
-        } else {
-          log.debug("Session validation failed");
+        // Get session data
+        Optional<String> encryptedData = sessionService.getSessionData(sessionId);
+        if (encryptedData.isEmpty()) {
+          invalidateAndClear(sessionId, response);
+          filterChain.doFilter(request, response);
+          return;
         }
 
+        // Decrypt session data
+        String decryptedData;
+        try {
+          decryptedData = encryptionService.decrypt(encryptedData.get());
+        } catch (Exception e) {
+          log.error("FATAL: Session decryption failed for session: {}", sessionId, e);
+          invalidateAndClear(sessionId, response);
+          filterChain.doFilter(request, response);
+          return;
+        }
+
+        // Validate token with IdP
+        SessionData sessionData = objectMapper.readValue(decryptedData, SessionData.class);
+        Optional<TokenValidationResult> validationResult = validateToken(sessionData);
+
+        if (validationResult.isEmpty()) {
+          log.warn("Token validation failed for session: {}", sessionId);
+          SecurityEventLogger.logTokenValidationFailure(
+              sessionData.userPrincipal().userId(),
+              "Token inactive or revoked"
+                                                       );
+          invalidateAndClear(sessionId, response);
+          filterChain.doFilter(request, response);
+          return;
+        }
+
+        // Set authentication
+        Authentication auth = createAuthentication(sessionData.userPrincipal());
+        SecurityContextHolder.getContext().setAuthentication(auth);
+
       } catch (Exception e) {
-        log.warn("Session authentication error", e);
+        log.error("Unexpected error during session authentication", e);
+        invalidateAndClear(sessionId, response);
       }
-    } else {
-      log.debug("No session cookie found in request");
     }
 
     filterChain.doFilter(request, response);
+  }
+
+  private void invalidateAndClear(String sessionId, HttpServletResponse response) {
+    sessionService.invalidateSession(sessionId);
+    CookieUtil.clearSessionCookie(response);
   }
 }
