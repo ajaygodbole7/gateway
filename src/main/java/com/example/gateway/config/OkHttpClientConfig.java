@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
  * to minimize connection overhead and improve latency
  */
 @Configuration
-public class HttpClientConfig {
+public class OkHttpClientConfig {
 
   @Value("${app.http.client.max-idle-connections:20}")
   private int maxIdleConnections;

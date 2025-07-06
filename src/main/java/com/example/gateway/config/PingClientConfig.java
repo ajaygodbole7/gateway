@@ -10,8 +10,8 @@ import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 /**
  * OAuth2 Client Registration Configuration
  */
-@Configuration
-public class OAuth2ClientConfig {
+@Configuration(proxyBeanMethods = false)
+public class PingClientConfig {
 
   @Value("${app.auth.ping.client-id}")
   private String clientId;

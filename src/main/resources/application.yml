@@ -1,89 +1,160 @@
+# ===================================================================
+# SPRING BOOT CORE CONFIGURATION
+# ===================================================================
 spring:
   application:
     name: security-gateway
+  threads:
+    virtual:
+      enabled: true # Enables Java 21 Virtual Threads for higher throughput
 
-  redis:
-    mode: ${REDIS_MODE:standalone}
-    host: ${REDIS_HOST:localhost}
-    port: ${REDIS_PORT:6380}
-    ssl:
-      enabled: ${REDIS_SSL_ENABLED:true}
-    lettuce:
-      pool:
-        max-active: 50
-        max-idle: 25
-        min-idle: 10
-        max-wait: 2000ms
-    cluster:
-      nodes: ${REDIS_CLUSTER_NODES:}
-      max-redirects: 3
-  data:
-    redis:
-      timeout: 2000ms
-
-azure:
-  keyvault:
-    uri: ${AZURE_KEYVAULT_URI}
-
-app:
-  frontend:
-    url: ${FRONTEND_URL:http://localhost:3000}
-
-  auth:
-    ping:
-      client-id: ${PING_CLIENT_ID}
-      authorization-uri: ${PING_AUTH_URI}
-      token-uri: ${PING_TOKEN_URI}
-      jwks-uri: ${PING_JWKS_URI}
-      issuer-uri: ${PING_ISSUER_URI}
-
-    allowed-return-paths:
-      - /dashboard
-      - /profile
-      - /settings
-      - /admin
-
-  security:
-    auth:
-      max-failures: 5
-      block-duration-minutes: 15
-
-    session:
-      sliding-window-minutes: 30
-      absolute-timeout-hours: 8
-
-  http:
-    client:
-      max-idle-connections: 20
-      keep-alive-duration: 5
-      max-requests: 100
-      max-requests-per-host: 20
-
+# ===================================================================
+# SERVER CONFIGURATION
+# ===================================================================
 server:
   port: 8080
+  # Enables Gzip compression for API responses to reduce payload size
   compression:
     enabled: true
+  # Prefers HTTP/2 for better performance if supported by the client and infrastructure
   http2:
     enabled: true
+  # Security setting to prevent leaking internal error details to clients
   error:
     include-message: never
     include-stacktrace: never
     include-binding-errors: never
 
+# ===================================================================
+# CUSTOM APPLICATION PROPERTIES (Mapped to ApplicationProperties.java)
+# ===================================================================
+app:
+  # --- Frontend Configuration ---
+  frontend:
+    url: ${FRONTEND_URL:http://localhost:3000}
+
+  # --- User Authentication Provider Configuration ---
+  auth:
+    ping:
+      client-id: ${PING_CLIENT_ID}
+      authorization-uri: ${PING_AUTH_URI}
+      token-uri: ${PING_TOKEN_URI}
+      validation-uri: ${PING_VALIDATION_URI}
+      jwks-uri: ${PING_JWKS_URI}
+      issuer-uri: ${PING_ISSUER_URI}
+    entra:
+      authority: ${ENTRA_AUTHORITY:https://login.microsoftonline.com/${ENTRA_TENANT_ID}}
+      client-id: ${ENTRA_CLIENT_ID}
+      issuer-uri: ${ENTRA_ISSUER_URI:https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0}
+      validation-uri: ${ENTRA_VALIDATION_URI:https://graph.microsoft.com/v1.0/me}
+      gateway-m2m-audience: ${ENTRA_GATEWAY_M2M_AUDIENCE:https://graph.microsoft.com/.default}
+    allowed-return-paths:
+      - /dashboard
+      - /profile
+      - /settings
+      - /admin
+    code-verifier-length: 64
+
+  # --- Gateway's M2M Token Management Configuration ---
+  m2m:
+    refresh:
+      enabled: ${M2M_REFRESH_ENABLED:true}
+      rate: ${M2M_REFRESH_RATE_MS:60000} # 1 minute
+      initial-delay: ${M2M_REFRESH_INITIAL_DELAY_MS:60000} # 1 minute
+    retry:
+      max-attempts: 15
+      delay-ms: 300
+
+  # --- Security Feature Configuration ---
+  security:
+    auth:
+      max-failures: 5
+      block-duration-minutes: 15
+    session:
+      sliding-window-minutes: 30
+      absolute-timeout-hours: 8
+
+  # --- Outbound HTTP Client Configuration ---
+  http:
+    client:
+      max-idle-connections: 20
+      keep-alive-duration-minutes: 5
+      max-requests: 100
+      max-requests-per-host: 20
+
+  # --- Azure Service Integration ---
+  azure:
+    key-vault:
+      uri: ${AZURE_KEYVAULT_URI}
+
+# ===================================================================
+# REDIS CONFIGURATION
+# ===================================================================
+redis:
+  mode: ${REDIS_MODE:standalone}
+  host: ${REDIS_HOST:localhost}
+  port: ${REDIS_PORT:6379} # Changed default to standard non-TLS port for local dev
+  ssl:
+    enabled: ${REDIS_SSL_ENABLED:false} # Default to false for local dev
+  cluster:
+    nodes: ${REDIS_CLUSTER_NODES:} # e.g., "host1:6379,host2:6379"
+  timeout: 2000ms # Client-side command timeout
+
+# ===================================================================
+# RESILIENCE (CIRCUIT BREAKER) CONFIGURATION
+# ===================================================================
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 20
+        minimumNumberOfCalls: 10
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 30s
+        failureRateThreshold: 50
+        eventConsumerBufferSize: 10
+    instances:
+      keyVault:
+        baseConfig: default
+        waitDurationInOpenState: 20s
+        slowCallDurationThreshold: 1s
+        slowCallRateThreshold: 70
+      pingIdentity:
+        baseConfig: default
+        waitDurationInOpenState: 60s
+        slowCallDurationThreshold: 3s
+        failureRateThreshold: 30
+      microsoftEntra:
+        baseConfig: default
+        waitDurationInOpenState: 60s
+        slowCallDurationThreshold: 3s
+        failureRateThreshold: 30
+
+# ===================================================================
+# MANAGEMENT & OBSERVABILITY (ACTUATOR) CONFIGURATION
+# ===================================================================
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus,circuitbreakers
       base-path: /actuator
   endpoint:
     health:
-      show-details: when-authorized
+      show-details: when_authorized
+  health:
+    circuitbreakers:
+      enabled: true
 
-logging:
-  level:
-    com.example.gateway: INFO
-    org.springframework.security: INFO
-    org.springframework.web: INFO
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} - %logger{36} - %msg%n"
+# ===================================================================
+# API DOCUMENTATION (SPRINGDOC / SWAGGER) CONFIGURATION
+# ===================================================================
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true

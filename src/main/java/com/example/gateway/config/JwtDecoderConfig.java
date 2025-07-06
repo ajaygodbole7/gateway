@@ -14,7 +14,7 @@ import org.springframework.security.oauth2.jwt.*;
 
 import java.util.List;
 
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class JwtDecoderConfig {
 
   @Value("${app.auth.ping.jwks-uri}")
