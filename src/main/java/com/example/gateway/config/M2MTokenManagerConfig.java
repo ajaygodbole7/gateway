@@ -1,6 +1,6 @@
 package com.example.gateway.config;
 
-import com.example.gateway.service.TokenManagerService;
+import com.example.gateway.service.M2MTokenManagerService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -11,17 +11,17 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 @RequiredArgsConstructor
-public class TokenManagerConfig {
+public class M2MTokenManagerConfig {
 
-  private final TokenManagerService tokenManagerService;
+  private final M2MTokenManagerService m2MTokenManagerService;
 
   @PostConstruct
   public void initialize() {
-    tokenManagerService.initialize();
+    m2MTokenManagerService.initialize();
   }
 
   @PreDestroy
   public void shutdown() {
-    tokenManagerService.shutdown();
+    m2MTokenManagerService.shutdown();
   }
 }

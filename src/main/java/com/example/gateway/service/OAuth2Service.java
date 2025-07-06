@@ -6,7 +6,6 @@ import com.example.gateway.exception.OAuth2Exception;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.*;
 import com.nimbusds.jose.crypto.MACSigner;
-import com.nimbusds.jose.crypto.MACVerifier;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.oauth2.sdk.AuthorizationCode;
@@ -66,7 +65,7 @@ public class OAuth2Service {
   private final JwtDecoder jwtDecoder;
   private final AzureKeyVaultClient keyVaultClient;
   private final ClientRegistration clientRegistration;
-  private final TokenManagerService tokenManager;
+  private final M2MTokenManagerService tokenManager;
   private final ObjectMapper objectMapper;
 
   @Value("${app.auth.oidc.max-authentication-age:3600}")
