@@ -1,16 +1,14 @@
 package com.example.gateway.web.rest.controller;
 
-
-
 import com.example.gateway.domain.entity.UserPrincipal;
+import com.example.gateway.exception.SessionException;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.Map;
 
 /**
  * REST controller implementation for session management.
@@ -27,12 +25,17 @@ public class SessionController implements SessionAPI {
 
     Authentication auth = SecurityContextHolder.getContext().getAuthentication();
 
-    if (auth == null || !auth.isAuthenticated()) {
-      log.error("Unexpected: SessionController received unauthenticated request");
-      return ResponseEntity.status(401).body(Map.of("error", "Not authenticated"));
+    // This should not happen if SecurityFilterChain is configured correctly
+    // Let GlobalErrorHandler handle it via AuthenticationException
+    if (auth == null || !auth.isAuthenticated() || auth.getPrincipal() == null) {
+      throw new SessionException("No authenticated session found");
     }
 
-    UserPrincipal principal = (UserPrincipal) auth.getPrincipal();
+    // Validate principal type
+    if (!(auth.getPrincipal() instanceof UserPrincipal principal)) {
+      log.error("Invalid principal type: {}", auth.getPrincipal().getClass());
+      throw new SessionException("Invalid session data");
+    }
 
     return ResponseEntity.ok(Map.of(
         "userId", principal.userId(),
@@ -50,11 +53,13 @@ public class SessionController implements SessionAPI {
 
     Authentication auth = SecurityContextHolder.getContext().getAuthentication();
 
-    if (auth == null || !auth.isAuthenticated()) {
-      return ResponseEntity.status(401).body(Map.of("error", "Not authenticated"));
+    if (auth == null || !auth.isAuthenticated() || auth.getPrincipal() == null) {
+      throw new SessionException("No authenticated session found");
     }
 
-    UserPrincipal principal = (UserPrincipal) auth.getPrincipal();
+    if (!(auth.getPrincipal() instanceof UserPrincipal principal)) {
+      throw new SessionException("Invalid session data");
+    }
 
     return ResponseEntity.ok(Map.of(
         "user", Map.of(
