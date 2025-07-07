@@ -1,8 +1,10 @@
 package com.example.gateway.service;
 
 import com.example.gateway.adapter.keyvault.client.AzureKeyVaultClient;
+import com.example.gateway.domain.entity.IdpProvider;
 import com.example.gateway.domain.entity.UserPrincipal;
 import com.example.gateway.exception.OAuth2Exception;
+import com.example.gateway.properties.ApplicationProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.*;
 import com.nimbusds.jose.crypto.MACSigner;
@@ -21,13 +23,12 @@ import com.nimbusds.oauth2.sdk.pkce.CodeChallengeMethod;
 import com.nimbusds.oauth2.sdk.pkce.CodeVerifier;
 import com.nimbusds.openid.connect.sdk.OIDCTokenResponse;
 import com.nimbusds.openid.connect.sdk.OIDCTokenResponseParser;
-import java.io.IOException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.security.oauth2.client.registration.ClientRegistration;
+import org.springframework.lang.NonNull;
+import org.springframework.lang.Nullable;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
@@ -40,11 +41,13 @@ import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 /**
  * OAuth2 Service with full PKCE and OIDC support
@@ -52,36 +55,23 @@ import java.util.*;
  * Implements:
  * - RFC 7636 (PKCE) with proper error handling
  * - OpenID Connect Core 1.0
- * - Request Object support
- * - Enhanced token validation
+ * - Multi-IdP support (Ping Identity and Microsoft Entra)
  */
 @Slf4j
 @Service
-@Profile("!test")
 @RequiredArgsConstructor
 public class OAuth2Service {
 
   private final RedisTemplate<String, String> redisTemplate;
   private final JwtDecoder jwtDecoder;
   private final AzureKeyVaultClient keyVaultClient;
-  private final ClientRegistration clientRegistration;
-  private final M2MTokenManagerService tokenManager;
   private final ObjectMapper objectMapper;
-
-  @Value("${app.auth.oidc.max-authentication-age:3600}")
-  private long maxAuthenticationAge;
-
-  @Value("${app.auth.oidc.use-request-object:false}")
-  private boolean useRequestObject;
-
-  @Value("${app.auth.pkce.code-verifier-length:128}")
-  private int codeVerifierLength;
-
-  @Value("${app.auth.oidc.required-acr-values:}")
-  private String requiredAcrValues;
+  private final ApplicationProperties properties;
 
   private static final String OAUTH_STATE_PREFIX = "oauth:state:";
+  private static final String OAUTH_CODE_USED_PREFIX = "oauth:code:used:";
   private static final Duration STATE_TTL = Duration.ofMinutes(10);
+  private static final Duration CODE_USED_TTL = Duration.ofMinutes(15);
 
   // OAuth2/OIDC error codes
   private static final String INVALID_REQUEST = "invalid_request";
@@ -89,18 +79,30 @@ public class OAuth2Service {
   private static final String INVALID_TOKEN = "invalid_token";
   private static final String TEMPORARILY_UNAVAILABLE = "temporarily_unavailable";
 
+  // OIDC configuration defaults
+  private static final long DEFAULT_MAX_AUTHENTICATION_AGE = 3600; // 1 hour
+  private static final boolean DEFAULT_USE_REQUEST_OBJECT = false;
+  private static final String DEFAULT_ACR_VALUES = "";
+
   /**
    * Generate OAuth2 authorization request with full OIDC support
    */
   public OAuth2AuthorizationRequest generateAuthorizationRequest(
-      String returnTo,
-      String prompt,
-      Long maxAge,
-      String loginHint,
-      String acrValues) {
+      @NonNull IdpProvider provider,
+      @NonNull String returnTo,
+      @Nullable String prompt,
+      @Nullable Long maxAge,
+      @Nullable String loginHint,
+      @Nullable String acrValues) {
 
-    // Generate PKCE parameters with configurable length
-    CodeVerifier codeVerifier = new CodeVerifier(codeVerifierLength);
+    // Validate return path
+    if (!isValidReturnPath(returnTo)) {
+      log.warn("Invalid return path requested: {}, using default", returnTo);
+      returnTo = "/dashboard";
+    }
+
+    // Generate PKCE parameters with configured length
+    CodeVerifier codeVerifier = new CodeVerifier(properties.auth().codeVerifierLength());
     CodeChallenge codeChallenge = CodeChallenge.compute(CodeChallengeMethod.S256, codeVerifier);
 
     String state = UUID.randomUUID().toString();
@@ -111,23 +113,30 @@ public class OAuth2Service {
     stateDataMap.put("codeVerifier", codeVerifier.getValue());
     stateDataMap.put("nonce", nonce);
     stateDataMap.put("returnTo", returnTo);
+    stateDataMap.put("provider", provider.name());
     stateDataMap.put("createdAt", System.currentTimeMillis());
     stateDataMap.put("maxAge", maxAge);
-    stateDataMap.put("acrValues", acrValues);
+    stateDataMap.put("acrValues", acrValues != null ? acrValues : DEFAULT_ACR_VALUES);
 
     try {
       String stateData = objectMapper.writeValueAsString(stateDataMap);
       redisTemplate.opsForValue().set(OAUTH_STATE_PREFIX + state, stateData, STATE_TTL);
+      log.debug("Stored OAuth state for provider {} with state: {}", provider, state);
     } catch (Exception e) {
       throw new OAuth2Exception("Failed to store state data", e);
     }
 
+    // Get provider-specific configuration
+    String clientId = getClientId(provider);
+    String authorizationUri = getAuthorizationUri(provider);
+    String redirectUri = properties.frontend().url() + "/auth/callback";
+
     // Build authorization request
     var requestBuilder = OAuth2AuthorizationRequest.authorizationCode()
-        .clientId(clientRegistration.getClientId())
-        .authorizationUri(clientRegistration.getProviderDetails().getAuthorizationUri())
-        .redirectUri(clientRegistration.getRedirectUri())
-        .scopes(clientRegistration.getScopes())
+        .clientId(clientId)
+        .authorizationUri(authorizationUri)
+        .redirectUri(redirectUri)
+        .scopes(Set.of("openid", "profile", "email"))
         .state(state);
 
     // Add PKCE and OIDC parameters
@@ -159,18 +168,30 @@ public class OAuth2Service {
   /**
    * Generate authorization request with default parameters
    */
-  public OAuth2AuthorizationRequest generateAuthorizationRequest(String returnTo) {
-    return generateAuthorizationRequest(returnTo, null, null, null, requiredAcrValues);
+  public OAuth2AuthorizationRequest generateAuthorizationRequest(
+      @NonNull IdpProvider provider,
+      @NonNull String returnTo) {
+    return generateAuthorizationRequest(provider, returnTo, null, null, null, DEFAULT_ACR_VALUES);
   }
 
   /**
    * Exchange authorization code for tokens with enhanced error handling
    */
-  public String exchangeCodeForToken(String code, String state) {
+  public String exchangeCodeForToken(@NonNull String code, @NonNull String state) {
+    // Check if code was already used (replay attack prevention)
+    String codeHash = hashCode(code);
+    String codeUsedKey = OAUTH_CODE_USED_PREFIX + codeHash;
+
+    Boolean wasSet = redisTemplate.opsForValue().setIfAbsent(codeUsedKey, "1", CODE_USED_TTL);
+    if (Boolean.FALSE.equals(wasSet)) {
+      log.error("Authorization code replay attempt detected for code hash: {}", codeHash);
+      throw new OAuth2AuthenticationException(
+          new OAuth2Error(INVALID_GRANT, "Authorization code already used", null));
+    }
+
     // Retrieve and validate state
     String stateDataJson = redisTemplate.opsForValue().getAndDelete(OAUTH_STATE_PREFIX + state);
     if (stateDataJson == null) {
-      // RFC 7636 Section 4.6 - Must return invalid_grant for PKCE failures
       throw new OAuth2AuthenticationException(
           new OAuth2Error(INVALID_GRANT,
                           "The provided authorization code is invalid, expired, revoked, " +
@@ -186,26 +207,35 @@ public class OAuth2Service {
           new OAuth2Error(INVALID_GRANT, "Invalid state data", null));
     }
 
+    // Validate state age
+    long createdAt = ((Number) stateData.get("createdAt")).longValue();
+    if (System.currentTimeMillis() - createdAt > STATE_TTL.toMillis()) {
+      throw new OAuth2AuthenticationException(
+          new OAuth2Error(INVALID_GRANT, "State expired", null));
+    }
+
     String codeVerifier = (String) stateData.get("codeVerifier");
     if (codeVerifier == null || codeVerifier.isEmpty()) {
       throw new OAuth2AuthenticationException(
           new OAuth2Error(INVALID_GRANT, "Invalid PKCE verification", null));
     }
 
+    IdpProvider provider = IdpProvider.valueOf((String) stateData.get("provider"));
+
     try {
       // Create token request using Nimbus
       AuthorizationCode authCode = new AuthorizationCode(code);
-      URI redirectUri = new URI(clientRegistration.getRedirectUri());
+      URI redirectUri = new URI(properties.frontend().url() + "/auth/callback");
       CodeVerifier verifier = new CodeVerifier(codeVerifier);
 
       AuthorizationCodeGrant codeGrant = new AuthorizationCodeGrant(
           authCode, redirectUri, verifier);
 
-      ClientID clientID = new ClientID(clientRegistration.getClientId());
-      Secret clientSecret = new Secret(getClientSecret());
+      ClientID clientID = new ClientID(getClientId(provider));
+      Secret clientSecret = new Secret(getClientSecret(provider));
       ClientSecretBasic clientAuth = new ClientSecretBasic(clientID, clientSecret);
 
-      URI tokenEndpoint = new URI(clientRegistration.getProviderDetails().getTokenUri());
+      URI tokenEndpoint = new URI(getTokenUri(provider));
       TokenRequest tokenRequest = new TokenRequest(
           tokenEndpoint, clientAuth, codeGrant);
 
@@ -219,7 +249,7 @@ public class OAuth2Service {
 
       OIDCTokenResponse oidcResponse = (OIDCTokenResponse) tokenResponse;
 
-      // Store tokens in state data for potential refresh
+      // Store tokens in state data for potential use
       stateData.put("idToken", oidcResponse.getOIDCTokens().getIDToken().serialize());
       if (oidcResponse.getOIDCTokens().getAccessToken() != null) {
         stateData.put("accessToken", oidcResponse.getOIDCTokens().getAccessToken().getValue());
@@ -232,16 +262,17 @@ public class OAuth2Service {
       String updatedStateJson = objectMapper.writeValueAsString(stateData);
       redisTemplate.opsForValue().set(OAUTH_STATE_PREFIX + state, updatedStateJson, Duration.ofMinutes(5));
 
+      log.info("Successfully exchanged code for tokens for provider: {}", provider);
       return oidcResponse.getOIDCTokens().getIDToken().serialize();
 
     } catch (URISyntaxException | IOException e) {
-      log.error("Token exchange failed", e);
+      log.error("Token exchange failed for provider: {}", provider, e);
       throw new OAuth2AuthenticationException(
           new OAuth2Error(TEMPORARILY_UNAVAILABLE, "Service temporarily unavailable", null));
     } catch (OAuth2AuthenticationException e) {
       throw e;
     } catch (Exception e) {
-      log.error("Unexpected error during token exchange", e);
+      log.error("Unexpected error during token exchange for provider: {}", provider, e);
       throw new OAuth2AuthenticationException(
           new OAuth2Error(OAuth2ErrorCodes.SERVER_ERROR, "Token exchange failed", null));
     }
@@ -250,7 +281,7 @@ public class OAuth2Service {
   /**
    * Validate ID token with comprehensive OIDC checks
    */
-  public UserPrincipal validateIdToken(String idToken, String state) {
+  public UserPrincipal validateIdToken(@NonNull String idToken, @NonNull String state) {
     // Retrieve state data
     String stateDataJson = redisTemplate.opsForValue().get(OAUTH_STATE_PREFIX + state);
     if (stateDataJson == null) {
@@ -271,37 +302,38 @@ public class OAuth2Service {
     Long requestedMaxAge = stateData.get("maxAge") != null ?
         ((Number) stateData.get("maxAge")).longValue() : null;
     String requestedAcrValues = (String) stateData.get("acrValues");
+    IdpProvider provider = IdpProvider.valueOf((String) stateData.get("provider"));
 
     try {
       // Decode and validate JWT
       Jwt jwt = jwtDecoder.decode(idToken);
 
-      // 1. Issuer validation (done by JwtDecoder)
-
-      // 2. Audience validation
+      // Validate audience
       List<String> audiences = jwt.getAudience();
-      if (audiences == null || !audiences.contains(clientRegistration.getClientId())) {
+      String expectedClientId = getClientId(provider);
+
+      if (audiences == null || !audiences.contains(expectedClientId)) {
         throw new OAuth2AuthenticationException(
             new OAuth2Error(INVALID_TOKEN, "Invalid audience", null));
       }
 
-      // 3. Multiple audiences check - verify azp
+      // Multiple audiences check - verify azp
       if (audiences.size() > 1) {
         String azp = jwt.getClaimAsString("azp");
-        if (!clientRegistration.getClientId().equals(azp)) {
+        if (!expectedClientId.equals(azp)) {
           throw new OAuth2AuthenticationException(
               new OAuth2Error(INVALID_TOKEN, "Invalid authorized party", null));
         }
       }
 
-      // 4. Nonce validation
+      // Nonce validation
       String tokenNonce = jwt.getClaimAsString("nonce");
       if (!expectedNonce.equals(tokenNonce)) {
         throw new OAuth2AuthenticationException(
             new OAuth2Error(INVALID_TOKEN, "Invalid nonce", null));
       }
 
-      // 5. auth_time validation
+      // auth_time validation
       Long authTime = jwt.getClaim("auth_time");
       if (authTime != null) {
         long currentTime = System.currentTimeMillis() / 1000;
@@ -318,23 +350,22 @@ public class OAuth2Service {
 
         // Check against configured maximum
         long timeSinceAuth = currentTime - authTime;
-        if (timeSinceAuth > maxAuthenticationAge) {
+        if (timeSinceAuth > DEFAULT_MAX_AUTHENTICATION_AGE) {
           throw new OAuth2AuthenticationException(
               new OAuth2Error(INVALID_TOKEN, "Authentication too old", null));
         }
       }
 
-      // 6. ACR validation
+      // ACR validation
       if (requestedAcrValues != null && !requestedAcrValues.isEmpty()) {
         String acr = jwt.getClaimAsString("acr");
         List<String> requestedAcrs = Arrays.asList(requestedAcrValues.split(" "));
         if (acr == null || !requestedAcrs.contains(acr)) {
           log.warn("ACR mismatch. Requested: {}, Received: {}", requestedAcrValues, acr);
-          // Depending on policy, this might be an error
         }
       }
 
-      // 7. Additional security checks
+      // Additional security checks
       validateAdditionalClaims(jwt);
 
       // Extract user information
@@ -345,7 +376,7 @@ public class OAuth2Service {
           jwt.getClaimAsString("given_name"),
           jwt.getClaimAsString("family_name"),
           System.currentTimeMillis(),
-          3600L
+          properties.security().session().slidingWindowMinutes() * 60L
       );
 
     } catch (JwtException e) {
@@ -358,17 +389,16 @@ public class OAuth2Service {
       log.error("Token validation failed", e);
       throw new OAuth2AuthenticationException(
           new OAuth2Error(OAuth2ErrorCodes.SERVER_ERROR, "Token validation failed", null));
+    } finally {
+      // Clean up state after validation
+      redisTemplate.delete(OAUTH_STATE_PREFIX + state);
     }
   }
 
   /**
-   * Build authorization URL with optional request object
+   * Build authorization URL
    */
-  public String buildAuthorizationUrl(OAuth2AuthorizationRequest request) {
-    if (useRequestObject) {
-      return buildAuthorizationUrlWithRequestObject(request);
-    }
-
+  public String buildAuthorizationUrl(@NonNull OAuth2AuthorizationRequest request) {
     return UriComponentsBuilder
         .fromUriString(request.getAuthorizationUri())
         .queryParam(OAuth2ParameterNames.RESPONSE_TYPE, "code")
@@ -382,75 +412,15 @@ public class OAuth2Service {
   }
 
   /**
-   * Build authorization URL with JWT request object
-   */
-  private String buildAuthorizationUrlWithRequestObject(OAuth2AuthorizationRequest request) {
-    try {
-      String requestJwt = buildRequestObject(request);
-
-      return UriComponentsBuilder
-          .fromUriString(request.getAuthorizationUri())
-          .queryParam(OAuth2ParameterNames.CLIENT_ID, request.getClientId())
-          .queryParam("request", requestJwt)
-          .build()
-          .toUriString();
-
-    } catch (Exception e) {
-      log.error("Failed to build request object, falling back to standard URL", e);
-      return buildAuthorizationUrl(request);
-    }
-  }
-
-  /**
-   * Build JWT request object for secure authorization requests
-   */
-  private String buildRequestObject(OAuth2AuthorizationRequest request) throws JOSEException {
-    JWTClaimsSet claims = new JWTClaimsSet.Builder()
-        .issuer(request.getClientId())
-        .audience(Collections.singletonList(
-            clientRegistration.getProviderDetails().getIssuerUri()))
-        .claim("response_type", "code")
-        .claim("client_id", request.getClientId())
-        .claim("redirect_uri", request.getRedirectUri())
-        .claim("scope", String.join(" ", request.getScopes()))
-        .claim("state", request.getState())
-        .claim("nonce", request.getAdditionalParameters().get("nonce"))
-        .claim("code_challenge", request.getAdditionalParameters().get("code_challenge"))
-        .claim("code_challenge_method", request.getAdditionalParameters().get("code_challenge_method"))
-        .expirationTime(Date.from(Instant.now().plusSeconds(300)))
-        .issueTime(Date.from(Instant.now()))
-        .jwtID(UUID.randomUUID().toString())
-        .build();
-
-    // Add additional parameters
-    request.getAdditionalParameters().forEach((key, value) -> {
-      if (!claims.getClaims().containsKey(key)) {
-        claims = new JWTClaimsSet.Builder(claims).claim(key, value).build();
-      }
-    });
-
-    // Sign with client secret
-    SignedJWT signedJWT = new SignedJWT(
-        new JWSHeader(JWSAlgorithm.HS256),
-        claims
-    );
-
-    JWSSigner signer = new MACSigner(getClientSecret().getBytes());
-    signedJWT.sign(signer);
-
-    return signedJWT.serialize();
-  }
-
-  /**
    * Get return URL from state
    */
-  public String getReturnUrl(String state) {
+  public String getReturnUrl(@NonNull String state) {
     try {
       String stateDataJson = redisTemplate.opsForValue().get(OAUTH_STATE_PREFIX + state);
       if (stateDataJson != null) {
         Map<String, Object> stateData = objectMapper.readValue(stateDataJson, Map.class);
         String returnTo = (String) stateData.get("returnTo");
-        return returnTo != null ? returnTo : "/dashboard";
+        return returnTo != null && isValidReturnPath(returnTo) ? returnTo : "/dashboard";
       }
     } catch (Exception e) {
       log.error("Failed to retrieve return URL", e);
@@ -461,41 +431,19 @@ public class OAuth2Service {
   /**
    * Build end session URL for OIDC logout
    */
-  public String buildEndSessionUrl(String idToken, String postLogoutRedirectUri, String state) {
-    Map<String, Object> metadata = clientRegistration.getProviderDetails().getConfigurationMetadata();
-    String endSessionEndpoint = (String) metadata.get("end_session_endpoint");
-
-    if (endSessionEndpoint == null) {
-      log.warn("No end_session_endpoint found in provider metadata");
-      return postLogoutRedirectUri != null ? postLogoutRedirectUri : "/";
-    }
-
-    UriComponentsBuilder builder = UriComponentsBuilder
-        .fromUriString(endSessionEndpoint)
-        .queryParam("id_token_hint", idToken);
-
-    if (postLogoutRedirectUri != null) {
-      builder.queryParam("post_logout_redirect_uri", postLogoutRedirectUri);
-    }
-
-    if (state != null) {
-      builder.queryParam("state", state);
-    }
-
-    return builder.build().toUriString();
+  public String buildEndSessionUrl(@NonNull IdpProvider provider,
+                                   @Nullable String idToken,
+                                   @Nullable String postLogoutRedirectUri,
+                                   @Nullable String state) {
+    // For now, return to home. In future, implement provider-specific logout
+    log.info("Building end session URL for provider: {}", provider);
+    return postLogoutRedirectUri != null ? postLogoutRedirectUri : "/";
   }
 
   /**
    * Validate additional security claims
    */
   private void validateAdditionalClaims(Jwt jwt) {
-    // Validate token binding if required
-    String cnf = jwt.getClaimAsString("cnf");
-    if (cnf != null) {
-      // Implement token binding validation
-      log.debug("Token binding claim present: {}", cnf);
-    }
-
     // Check for required claims
     if (jwt.getSubject() == null || jwt.getSubject().isEmpty()) {
       throw new OAuth2AuthenticationException(
@@ -519,6 +467,8 @@ public class OAuth2Service {
     String errorCode = error.getCode();
     String errorDescription = error.getDescription();
 
+    log.error("Token error response: {} - {}", errorCode, errorDescription);
+
     // Map to appropriate OAuth2 error
     if ("invalid_grant".equals(errorCode)) {
       throw new OAuth2AuthenticationException(
@@ -531,32 +481,89 @@ public class OAuth2Service {
   }
 
   /**
-   * Get client secret from Key Vault
+   * Get client ID based on provider
    */
-  private String getClientSecret() {
-    return keyVaultClient.getSecret("ping-client-secret");
+  private String getClientId(IdpProvider provider) {
+    return switch (provider) {
+      case PING_IDENTITY -> properties.auth().ping().clientId();
+      case MICROSOFT_ENTRA -> properties.auth().entra().clientId();
+    };
   }
 
   /**
-   * Clean up expired state data
+   * Get authorization URI based on provider
    */
+  private String getAuthorizationUri(IdpProvider provider) {
+    return switch (provider) {
+      case PING_IDENTITY -> properties.auth().ping().authorizationUri();
+      case MICROSOFT_ENTRA -> properties.auth().entra().authority() + "/oauth2/v2.0/authorize";
+    };
+  }
+
+  /**
+   * Get token URI based on provider
+   */
+  private String getTokenUri(IdpProvider provider) {
+    return switch (provider) {
+      case PING_IDENTITY -> properties.auth().ping().tokenUri();
+      case MICROSOFT_ENTRA -> properties.auth().entra().authority() + "/oauth2/v2.0/token";
+    };
+  }
+
+  /**
+   * Get client secret from Key Vault based on provider
+   */
+  private String getClientSecret(IdpProvider provider) {
+    return switch (provider) {
+      case PING_IDENTITY -> keyVaultClient.getSecret("ping-client-secret");
+      case MICROSOFT_ENTRA -> keyVaultClient.getSecret("entra-client-secret");
+    };
+  }
+
+  /**
+   * Check if return path is valid
+   */
+  private boolean isValidReturnPath(String path) {
+    return properties.auth().allowedReturnPaths().contains(path);
+  }
+
+  /**
+   * Hash authorization code for storage
+   */
+  private String hashCode(String code) {
+    try {
+      var digest = java.security.MessageDigest.getInstance("SHA-256");
+      byte[] hash = digest.digest(code.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      return Base64.getEncoder().encodeToString(hash);
+    } catch (Exception e) {
+      throw new OAuth2Exception("Failed to hash code", e);
+    }
+  }
+
+  /**
+   * Clean up expired state data - runs every hour
+   * Note: This is a safety mechanism. Redis TTL should handle most cleanup.
+   */
+  @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.HOURS)
   public void cleanupExpiredState() {
-    Set<String> keys = redisTemplate.keys(OAUTH_STATE_PREFIX + "*");
-    if (keys != null) {
-      for (String key : keys) {
-        String stateData = redisTemplate.opsForValue().get(key);
-        if (stateData != null) {
-          try {
-            Map<String, Object> data = objectMapper.readValue(stateData, Map.class);
-            long createdAt = ((Number) data.get("createdAt")).longValue();
-            if (System.currentTimeMillis() - createdAt > STATE_TTL.toMillis()) {
-              redisTemplate.delete(key);
-            }
-          } catch (Exception e) {
-            log.error("Failed to clean up state: {}", key, e);
+    log.debug("Running OAuth state cleanup task");
+    try {
+      Set<String> keys = redisTemplate.keys(OAUTH_STATE_PREFIX + "*");
+      if (keys != null && !keys.isEmpty()) {
+        int cleaned = 0;
+        for (String key : keys) {
+          Long ttl = redisTemplate.getExpire(key);
+          if (ttl == null || ttl <= 0) {
+            redisTemplate.delete(key);
+            cleaned++;
           }
         }
+        if (cleaned > 0) {
+          log.info("Cleaned up {} expired OAuth state entries", cleaned);
+        }
       }
+    } catch (Exception e) {
+      log.error("Error during OAuth state cleanup", e);
     }
   }
 }
