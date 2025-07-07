@@ -1,9 +1,18 @@
 package com.example.gateway.web.rest.errors;
 
 import com.example.gateway.exception.*;
+import io.lettuce.core.tracing.Tracer.Span;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.websocket.SessionException;
+import java.net.URI;
+import java.util.Optional;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
@@ -13,6 +22,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 
@@ -28,8 +38,19 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @RestControllerAdvice
+@RequiredArgsConstructor
+@RequestMapping(produces = {MediaType.APPLICATION_JSON_VALUE, MediaType.APPLICATION_PROBLEM_JSON_VALUE})
 public class GlobalErrorHandler {
 
+  private static final String ERROR_BASE_URL = "https://api.gateway.example.com/problems/";
+  private static final String ERROR_CODE = "errorCode";
+  private static final String TIMESTAMP = "timestamp";
+  private static final String TRACE_ID = "traceId";
+  private static final String SPAN_ID = "spanId";
+
+  private final Environment env;
+
+  // OAuth2 and Authentication Exceptions
   @ExceptionHandler(OAuth2AuthenticationException.class)
   public ResponseEntity<Map<String, Object>> handleOAuth2Exception(
       OAuth2AuthenticationException ex, WebRequest request) {
@@ -209,8 +230,61 @@ public class GlobalErrorHandler {
     return body;
   }
 
+  private ProblemDetail createBaseProblemDetail(
+      HttpStatus status, String title, Exception ex, HttpServletRequest request) {
+
+    ProblemDetail problemDetail = ProblemDetail.forStatus(status);
+    problemDetail.setTitle(title);
+    problemDetail.setDetail(ex.getMessage());
+    problemDetail.setType(URI.create(ERROR_BASE_URL + status.value()));
+    problemDetail.setInstance(URI.create(request.getRequestURI()));
+    problemDetail.setProperty(ERROR_CODE, title.toUpperCase().replace(" ", "_"));
+    problemDetail.setProperty(TIMESTAMP, Instant.now());
+
+    // Add debug info only in dev
+    if (env.acceptsProfiles(Profiles.of("dev"))) {
+      addDebugInfo(problemDetail, ex);
+    }
+
+    // Add sanitized request metadata
+    addSecurityAwareMetadata(problemDetail, request);
+
+    return problemDetail;
+  }
+
+  private void addDebugInfo(ProblemDetail detail, Exception ex) {
+    detail.setProperty("exception", ex.getClass().getName());
+    // Limit stack trace for security
+    StackTraceElement[] stackTrace = ex.getStackTrace();
+    if (stackTrace.length > 0) {
+      detail.setProperty("location", stackTrace[0].toString());
+    }
+  }
+
   private String extractPath(WebRequest request) {
     String description = request.getDescription(false);
     return description.replace("uri=", "");
   }
+
+  private void addSecurityAwareMetadata(ProblemDetail detail, HttpServletRequest request) {
+    // Be careful not to log sensitive headers
+    Map<String, String> metadata = Map.of(
+        "clientIp", getClientIp(request),
+        "httpMethod", request.getMethod(),
+        "requestPath", request.getRequestURI(),
+        "userAgent", Optional.ofNullable(request.getHeader("User-Agent")).orElse("Unknown"),
+        "requestId", Optional.ofNullable(request.getHeader("X-Request-Id")).orElse("N/A")
+                                         );
+    detail.setProperty("request", metadata);
+  }
+
+  private String getClientIp(HttpServletRequest request) {
+    // Handle X-Forwarded-For for Azure App Gateway
+    String xForwardedFor = request.getHeader("X-Forwarded-For");
+    if (xForwardedFor != null && !xForwardedFor.isEmpty()) {
+      return xForwardedFor.split(",")[0].trim();
+    }
+    return request.getRemoteAddr();
+  }
+
 }

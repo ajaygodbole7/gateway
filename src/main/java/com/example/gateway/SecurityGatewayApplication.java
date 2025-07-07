@@ -29,7 +29,7 @@ public class SecurityGatewayApplication {
 
     // Azure-specific optimizations
     app.setLazyInitialization(false); // Faster cold starts
-    app.setRegisterShutdownHook(true); // Graceful shutdown for Azure
+    app.setRegisterShutdownHook(true); // Graceful shutdown for Azure container apps or AKS
 
     app.run(args);
   }
