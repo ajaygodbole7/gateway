@@ -32,7 +32,7 @@ import java.time.Duration;
  * - Support for standalone and cluster modes
  */
 @Slf4j
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class RedisConfig {
 
   @Autowired

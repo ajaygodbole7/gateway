@@ -75,7 +75,7 @@ app:
       absolute-timeout-hours: 8
 
   # --- Outbound HTTP Client Configuration ---
-  http:
+  okhttp:
     client:
       max-idle-connections: 20
       keep-alive-duration-minutes: 5

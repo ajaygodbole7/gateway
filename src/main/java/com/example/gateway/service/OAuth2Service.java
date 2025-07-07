@@ -6,10 +6,6 @@ import com.example.gateway.domain.entity.UserPrincipal;
 import com.example.gateway.exception.OAuth2Exception;
 import com.example.gateway.properties.ApplicationProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.nimbusds.jose.*;
-import com.nimbusds.jose.crypto.MACSigner;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.oauth2.sdk.AuthorizationCode;
 import com.nimbusds.oauth2.sdk.AuthorizationCodeGrant;
 import com.nimbusds.oauth2.sdk.TokenRequest;
@@ -23,6 +19,19 @@ import com.nimbusds.oauth2.sdk.pkce.CodeChallengeMethod;
 import com.nimbusds.oauth2.sdk.pkce.CodeVerifier;
 import com.nimbusds.openid.connect.sdk.OIDCTokenResponse;
 import com.nimbusds.openid.connect.sdk.OIDCTokenResponseParser;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -41,14 +50,6 @@ import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.util.UriComponentsBuilder;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.time.Duration;
-import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.TimeUnit;
-
 /**
  * OAuth2 Service with full PKCE and OIDC support
  *
@@ -62,27 +63,24 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class OAuth2Service {
 
-  private final RedisTemplate<String, String> redisTemplate;
-  private final JwtDecoder jwtDecoder;
-  private final AzureKeyVaultClient keyVaultClient;
-  private final ObjectMapper objectMapper;
-  private final ApplicationProperties properties;
-
   private static final String OAUTH_STATE_PREFIX = "oauth:state:";
   private static final String OAUTH_CODE_USED_PREFIX = "oauth:code:used:";
   private static final Duration STATE_TTL = Duration.ofMinutes(10);
   private static final Duration CODE_USED_TTL = Duration.ofMinutes(15);
-
   // OAuth2/OIDC error codes
   private static final String INVALID_REQUEST = "invalid_request";
   private static final String INVALID_GRANT = "invalid_grant";
   private static final String INVALID_TOKEN = "invalid_token";
   private static final String TEMPORARILY_UNAVAILABLE = "temporarily_unavailable";
-
   // OIDC configuration defaults
   private static final long DEFAULT_MAX_AUTHENTICATION_AGE = 3600; // 1 hour
   private static final boolean DEFAULT_USE_REQUEST_OBJECT = false;
   private static final String DEFAULT_ACR_VALUES = "";
+  private final RedisTemplate<String, String> redisTemplate;
+  private final JwtDecoder jwtDecoder;
+  private final AzureKeyVaultClient keyVaultClient;
+  private final ObjectMapper objectMapper;
+  private final ApplicationProperties properties;
 
   /**
    * Generate OAuth2 authorization request with full OIDC support
@@ -102,7 +100,7 @@ public class OAuth2Service {
     }
 
     // Generate PKCE parameters with configured length
-    CodeVerifier codeVerifier = new CodeVerifier(properties.auth().codeVerifierLength());
+    CodeVerifier codeVerifier = new CodeVerifier();
     CodeChallenge codeChallenge = CodeChallenge.compute(CodeChallengeMethod.S256, codeVerifier);
 
     String state = UUID.randomUUID().toString();

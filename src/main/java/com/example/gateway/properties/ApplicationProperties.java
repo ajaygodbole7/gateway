@@ -6,19 +6,15 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
+import org.springframework.boot.convert.DurationUnit;
 import org.springframework.validation.annotation.Validated;
 
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 /**
  * A single, centralized, and type-safe record for all application configuration properties.
- *
- * @param frontend Configuration for the frontend application URL.
- * @param auth     Configuration for all authentication providers (Ping, Entra).
- * @param m2m      Configuration for the M2M token manager service.
- * @param security Configuration for security features like session timeouts.
- * @param http     Configuration for the underlying HTTP clients.
- * @param azure    Configuration for Azure service integrations.
  */
 @Validated
 @ConfigurationProperties(prefix = "app")
@@ -27,7 +23,7 @@ public record ApplicationProperties(
     @NotNull @Valid AuthProperties auth,
     @NotNull @Valid M2mProperties m2m,
     @NotNull @Valid SecurityProperties security,
-    @NotNull @Valid HttpProperties http,
+    @NotNull @Valid ApplicationProperties.OkHttpProperties http,
     @NotNull @Valid AzureProperties azure
 ) {
 
@@ -42,7 +38,7 @@ public record ApplicationProperties(
     public record PingProperties(
         @NotBlank String clientId,
         @NotBlank String authorizationUri,
-        @NotBlank String tokenUri, // Used for both user and M2M tokens
+        @NotBlank String tokenUri,
         @NotBlank String validationUri,
         @NotBlank String jwksUri,
         @NotBlank String issuerUri
@@ -53,7 +49,7 @@ public record ApplicationProperties(
         @NotBlank String clientId,
         @NotBlank String issuerUri,
         @NotBlank String validationUri,
-        @NotBlank String gatewayM2mAudience // Scope for the gateway's own M2M token
+        @NotBlank String gatewayM2mAudience
     ) {}
   }
 
@@ -61,15 +57,19 @@ public record ApplicationProperties(
       @NotNull @Valid RefreshProperties refresh,
       @NotNull @Valid RetryProperties retry
   ) {
+    /**
+     * Uses java.time.Duration for type-safe and user-friendly configuration.
+     * Values in application.yml can be specified as "60s", "1m", "10000ms", etc.
+     */
     public record RefreshProperties(
         @DefaultValue("true") boolean enabled,
-        @DefaultValue("60000") String rate,
-        @DefaultValue("60000") String initialDelay
+        @DefaultValue("60s") @DurationUnit(ChronoUnit.SECONDS) Duration rate,
+        @DefaultValue("60s") @DurationUnit(ChronoUnit.SECONDS) Duration initialDelay
     ) {}
 
     public record RetryProperties(
-        @DefaultValue("15") int maxAttempts,
-        @DefaultValue("300") long delayMs
+        @DefaultValue("15") @Positive int maxAttempts,
+        @DefaultValue("300ms") @DurationUnit(ChronoUnit.MILLIS) Duration delay
     ) {}
   }
 
@@ -88,7 +88,7 @@ public record ApplicationProperties(
     ) {}
   }
 
-  public record HttpProperties(
+  public record OkHttpProperties(
       @NotNull @Valid ClientProperties client
   ) {
     public record ClientProperties(

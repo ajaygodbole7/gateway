@@ -1,5 +1,7 @@
 package com.example.gateway.config;
 
+import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
 import okhttp3.ConnectionPool;
 import okhttp3.Dispatcher;
 import okhttp3.OkHttpClient;
@@ -8,16 +10,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.util.Arrays;
-import java.util.concurrent.TimeUnit;
-
 /**
  * Optimized OkHttp Client Configuration
  *
  * Shared connection pool and dispatcher for all HTTP clients
  * to minimize connection overhead and improve latency
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class OkHttpClientConfig {
 
   @Value("${app.http.client.max-idle-connections:20}")
