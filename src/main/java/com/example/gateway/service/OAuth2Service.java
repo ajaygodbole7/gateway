@@ -8,6 +8,7 @@ import com.example.gateway.domain.entity.UserPrincipal;
 import com.example.gateway.exception.OAuth2Exception;
 import com.example.gateway.properties.ApplicationProperties;
 import com.example.gateway.security.AuthenticationFailureTracker;
+import com.example.gateway.util.JwtValidationUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.oauth2.sdk.id.State;
@@ -34,70 +35,65 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * OAuth2 orchestration service that uses a manually constructed map of IdP clients
- * to ensure clean dependency injection and clear logic.
+ * OAuth2 service handling PKCE flow orchestration.
+ * Lightweight service that delegates validation to utility classes.
  */
 @Slf4j
 @Service
 public class OAuth2Service {
 
-  // --- Constants ---
-  private static final String PKCE_STATE_PREFIX = "pkce:";
+  private static final String PKCE_STATE_PREFIX = "pkce:state:";
   private static final String USED_CODE_PREFIX = "used_code:";
   private static final String USED_STATE_PREFIX = "used_state:";
   private static final Duration STATE_TTL = Duration.ofMinutes(10);
   private static final Duration REPLAY_KEY_TTL = Duration.ofMinutes(15);
   private static final String ERROR_INVALID_GRANT = "invalid_grant";
-  private static final String ERROR_INVALID_TOKEN = "invalid_token";
 
-  // --- Injected Dependencies ---
   private final RedisTemplate<String, String> redisTemplate;
   private final ObjectMapper objectMapper;
   private final ApplicationProperties properties;
   private final AuthenticationFailureTracker failureTracker;
-  private final Map<IdpProvider, IdpClient> idpClients; // This map will be constructed manually
+  private final Map<IdpProvider, IdpClient> idpClients;
 
-  /**
-   * DTO for successful authentication results.
-   */
-  public record AuthSuccessResult(UserPrincipal principal, String idToken, IdpProvider provider, String returnTo) {}
-
-  /**
-   * Constructs the OAuth2Service, injecting individual client implementations
-   * and manually building the provider-to-client map. This is the correct
-   * pattern for handling dependency injection of strategies keyed by an enum.
-   */
   public OAuth2Service(
       RedisTemplate<String, String> redisTemplate,
       ObjectMapper objectMapper,
       ApplicationProperties properties,
       AuthenticationFailureTracker failureTracker,
-      PingIdentityClient pingClient, // Inject the concrete Ping client
-      MicrosoftEntraClient entraClient // Inject the concrete Entra client
-                      ) {
+      PingIdentityClient pingClient,
+      MicrosoftEntraClient entraClient) {
     this.redisTemplate = redisTemplate;
     this.objectMapper = objectMapper;
     this.properties = properties;
     this.failureTracker = failureTracker;
 
-    // Manually construct the map
+    // Build IdP client map
     this.idpClients = new EnumMap<>(IdpProvider.class);
     this.idpClients.put(IdpProvider.PING_IDENTITY, pingClient);
     this.idpClients.put(IdpProvider.MICROSOFT_ENTRA, entraClient);
   }
 
-  public String generateAuthorizationUrl(@NonNull IdpProvider provider, @NonNull String returnTo, @NonNull String clientIp) {
+  /**
+   * Generates the authorization URL for OAuth2 login.
+   */
+  public String generateAuthorizationUrl(@NonNull IdpProvider provider,
+                                         @NonNull String returnTo,
+                                         @NonNull String clientIp) {
     if (failureTracker.isBlocked(clientIp)) {
       throw new OAuth2Exception("Too many failed attempts from this IP.");
     }
 
+    // Generate PKCE components
     CodeVerifier codeVerifier = new CodeVerifier();
     CodeChallenge codeChallenge = CodeChallenge.compute(CodeChallengeMethod.S256, codeVerifier);
     State state = new State();
     Nonce nonce = new Nonce();
 
-    storePkceState(state.getValue(), provider, codeVerifier.getValue(), nonce.getValue(), returnTo, clientIp);
+    // Store state for callback validation
+    storePkceState(state.getValue(), provider, codeVerifier.getValue(),
+                   nonce.getValue(), returnTo, clientIp);
 
+    // Build authorization URL
     IdpClient client = getIdpClient(provider);
     String redirectUri = properties.frontend().url() + "/auth/callback";
 
@@ -110,54 +106,89 @@ public class OAuth2Service {
         .queryParam("nonce", nonce.getValue())
         .queryParam("code_challenge", codeChallenge.getValue())
         .queryParam("code_challenge_method", "S256")
-        .build().toUriString();
+        .build()
+        .toUriString();
   }
 
-  public AuthSuccessResult processCallback(@NonNull String code, @NonNull String state, @NonNull String clientIp) {
+  /**
+   * Processes the OAuth2 callback, exchanges code for tokens, and validates them.
+   */
+  public CallbackResult processCallback(@NonNull String code,
+                                        @NonNull String state,
+                                        @NonNull String clientIp) {
     try {
+      // Prevent replay attacks
       checkAndPreventReplay(code, state);
+
+      // Retrieve and validate state
       PkceStateData stateData = retrieveAndConsumePkceState(state);
       validateCallbackContext(stateData, clientIp);
 
+      // Exchange code for tokens
       IdpClient client = getIdpClient(stateData.provider());
       String redirectUri = properties.frontend().url() + "/auth/callback";
 
-      IdpClient.TokenResponse tokenResponse = client.exchangeCodeForTokens(code, stateData.codeVerifier(), redirectUri);
+      IdpClient.TokenResponse tokenResponse = client.exchangeCodeForTokens(
+          code, stateData.codeVerifier(), redirectUri);
 
-      Jwt jwt = client.validateIdToken(tokenResponse.idToken());
-      validateOidcClaims(jwt, stateData.nonce());
+      // Validate ID token using utility
+      Jwt jwt = JwtValidationUtils.validateIdToken(
+          tokenResponse.idToken(),
+          getJwksUri(stateData.provider()),
+          getIssuer(stateData.provider()),
+          client.getClientId(),
+          stateData.nonce()
+                                                  );
 
+      // Extract user principal
       UserPrincipal userPrincipal = client.extractUserPrincipal(jwt);
 
+      // Clear failure tracking on success
       failureTracker.clearFailures(clientIp);
 
-      return new AuthSuccessResult(userPrincipal, tokenResponse.idToken(), stateData.provider(), stateData.returnTo());
+      log.info("Successfully authenticated user: {} via {}",
+               userPrincipal.userId(), stateData.provider());
+
+      return new CallbackResult(
+          userPrincipal,
+          tokenResponse.idToken(),
+          stateData.provider(),
+          stateData.returnTo()
+      );
+
+    } catch (OAuth2AuthenticationException e) {
+      failureTracker.recordFailure(clientIp);
+      throw e;
     } catch (Exception e) {
       failureTracker.recordFailure(clientIp);
-      if (e instanceof OAuth2Exception || e instanceof OAuth2AuthenticationException) {
-        throw e;
-      }
-      throw new OAuth2Exception("Callback processing failed.", e);
+      log.error("Callback processing failed", e);
+      throw new OAuth2Exception("Callback processing failed: " + e.getMessage(), e);
     }
   }
 
-  // --- All private helper methods remain unchanged ---
+  // Helper methods
 
-  private void storePkceState(String state, IdpProvider provider, String codeVerifier, String nonce, String returnTo, String clientIp) {
+  private void storePkceState(String state, IdpProvider provider, String codeVerifier,
+                              String nonce, String returnTo, String clientIp) {
     PkceStateData stateData = new PkceStateData(provider, codeVerifier, nonce, returnTo, clientIp);
     try {
       String json = objectMapper.writeValueAsString(stateData);
       redisTemplate.opsForValue().set(PKCE_STATE_PREFIX + state, json, STATE_TTL);
+      log.debug("Stored PKCE state for provider: {}", provider);
     } catch (JsonProcessingException e) {
       throw new OAuth2Exception("Failed to store PKCE state", e);
     }
   }
 
   private PkceStateData retrieveAndConsumePkceState(String state) {
-    String json = redisTemplate.opsForValue().getAndDelete(PKCE_STATE_PREFIX + state);
+    String key = PKCE_STATE_PREFIX + state;
+    String json = redisTemplate.opsForValue().getAndDelete(key);
+
     if (json == null) {
-      throw new OAuth2AuthenticationException(new OAuth2Error(ERROR_INVALID_GRANT, "Invalid or expired state.", null));
+      throw new OAuth2AuthenticationException(
+          new OAuth2Error(ERROR_INVALID_GRANT, "Invalid or expired state.", null));
     }
+
     try {
       return objectMapper.readValue(json, PkceStateData.class);
     } catch (JsonProcessingException e) {
@@ -167,7 +198,10 @@ public class OAuth2Service {
 
   private void validateCallbackContext(PkceStateData stateData, String currentClientIp) {
     if (!stateData.clientIp().equals(currentClientIp)) {
-      throw new OAuth2AuthenticationException(new OAuth2Error(ERROR_INVALID_GRANT, "Client IP mismatch.", null));
+      log.warn("Client IP mismatch. Original: {}, Current: {}",
+               stateData.clientIp(), currentClientIp);
+      throw new OAuth2AuthenticationException(
+          new OAuth2Error(ERROR_INVALID_GRANT, "Client IP mismatch.", null));
     }
   }
 
@@ -176,25 +210,40 @@ public class OAuth2Service {
     String codeKey = USED_CODE_PREFIX + codeHash;
     String stateKey = USED_STATE_PREFIX + state;
 
+    // Check if code was already used
     if (Boolean.FALSE.equals(redisTemplate.opsForValue().setIfAbsent(codeKey, "1", REPLAY_KEY_TTL))) {
-      throw new OAuth2AuthenticationException(new OAuth2Error(ERROR_INVALID_GRANT, "Authorization code has already been used.", null));
+      log.warn("Authorization code replay detected");
+      throw new OAuth2AuthenticationException(
+          new OAuth2Error(ERROR_INVALID_GRANT, "Authorization code has already been used.", null));
     }
-    if (Boolean.FALSE.equals(redisTemplate.opsForValue().setIfAbsent(stateKey, "1", REPLAY_KEY_TTL))) {
-      redisTemplate.delete(codeKey);
-      throw new OAuth2AuthenticationException(new OAuth2Error(ERROR_INVALID_GRANT, "State has already been used.", null));
-    }
-  }
 
-  private void validateOidcClaims(Jwt jwt, String expectedNonce) {
-    String tokenNonce = jwt.getClaimAsString("nonce");
-    if (tokenNonce == null || !tokenNonce.equals(expectedNonce)) {
-      throw new OAuth2AuthenticationException(new OAuth2Error(ERROR_INVALID_TOKEN, "Nonce validation failed.", null));
+    // Check if state was already used
+    if (Boolean.FALSE.equals(redisTemplate.opsForValue().setIfAbsent(stateKey, "1", REPLAY_KEY_TTL))) {
+      redisTemplate.delete(codeKey); // Clean up
+      log.warn("State replay detected");
+      throw new OAuth2AuthenticationException(
+          new OAuth2Error(ERROR_INVALID_GRANT, "State has already been used.", null));
     }
   }
 
   private IdpClient getIdpClient(IdpProvider provider) {
     return Optional.ofNullable(idpClients.get(provider))
-        .orElseThrow(() -> new OAuth2Exception("FATAL: No IdpClient bean is configured for provider: " + provider));
+        .orElseThrow(() -> new OAuth2Exception(
+            "No IdpClient configured for provider: " + provider));
+  }
+
+  private String getJwksUri(IdpProvider provider) {
+    return switch (provider) {
+      case PING_IDENTITY -> properties.auth().ping().jwksUri();
+      case MICROSOFT_ENTRA -> properties.auth().entra().validationUri() + "/discovery/v2.0/keys";
+    };
+  }
+
+  private String getIssuer(IdpProvider provider) {
+    return switch (provider) {
+      case PING_IDENTITY -> properties.auth().ping().issuerUri();
+      case MICROSOFT_ENTRA -> properties.auth().entra().issuerUri();
+    };
   }
 
   private String hashValue(String value) {
@@ -203,9 +252,24 @@ public class OAuth2Service {
       byte[] hash = digest.digest(value.getBytes(StandardCharsets.UTF_8));
       return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
     } catch (NoSuchAlgorithmException e) {
-      throw new OAuth2Exception("SHA-256 algorithm not available for hashing.", e);
+      throw new OAuth2Exception("SHA-256 algorithm not available", e);
     }
   }
 
-  private record PkceStateData(IdpProvider provider, String codeVerifier, String nonce, String returnTo, String clientIp) {}
+  // DTOs
+
+  private record PkceStateData(
+      IdpProvider provider,
+      String codeVerifier,
+      String nonce,
+      String returnTo,
+      String clientIp
+  ) {}
+
+  public record CallbackResult(
+      UserPrincipal userPrincipal,
+      String idToken,
+      IdpProvider provider,
+      String returnTo
+  ) {}
 }

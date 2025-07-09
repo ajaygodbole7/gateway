@@ -392,6 +392,26 @@ public AsyncTaskExecutor applicationTaskExecutor() {
 - **Features:** HTTP/2 support, connection reuse
 - **Configuration:** `OkHttpClientConfig` class
 
+## PKCE Implementation
+
+### Overview
+We use the Nimbus JOSE JWT library for PKCE implementation, which handles:
+- Secure code verifier generation (43-128 characters, typically ~43)
+- Code challenge computation using SHA-256
+- Proper Base64URL encoding without padding
+- All character set validations per RFC 7636
+
+### Key Design Decisions
+1. **No Custom PKCE Implementation**: We rely entirely on Nimbus library's proven implementation
+2. **Startup Validation**: We only validate SHA-256 availability at startup as a safety check
+3. **No Configuration**: Code verifier length is managed by Nimbus (it generates optimal length)
+
+### Usage
+```java
+// Simple and secure - let the library handle complexity
+CodeVerifier codeVerifier = new CodeVerifier();
+CodeChallenge codeChallenge = CodeChallenge.compute(CodeChallengeMethod.S256, codeVerifier);
+
 ## Critical Invariants
 
 1. **Session cookies never contain tokens**

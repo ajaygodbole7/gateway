@@ -12,27 +12,22 @@ import lombok.extern.slf4j.Slf4j;
 import okhttp3.*;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.util.Map;
 
-@Slf4j
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class PingIdentityClient implements IdpClient {
 
-  private static final String CIRCUIT_BREAKER_NAME = "pingIdentity";
   private static final String CLIENT_SECRET_NAME = "ping-client-secret";
 
   private final ApplicationProperties properties;
   private final AzureKeyVaultClient keyVaultClient;
-  private final JwtDecoder jwtDecoder;
+  private final OkHttpClient defaultOkHttpClient;
   private final ObjectMapper objectMapper;
-
-  @Qualifier("defaultOkHttpClient")
-  private final OkHttpClient httpClient;
 
   @Override
   public String getAuthorizationEndpoint() {
@@ -45,13 +40,14 @@ public class PingIdentityClient implements IdpClient {
   }
 
   @Override
-  @CircuitBreaker(name = CIRCUIT_BREAKER_NAME, fallbackMethod = "exchangeCodeFallback")
+  @CircuitBreaker(name = "pingIdentity", fallbackMethod = "exchangeCodeFallback")
   public TokenResponse exchangeCodeForTokens(String code, String codeVerifier, String redirectUri) {
-    log.debug("Exchanging authorization code for tokens with Ping Identity.");
+    log.debug("Exchanging authorization code for tokens with Ping Identity");
+
     String clientSecret = keyVaultClient.getSecret(CLIENT_SECRET_NAME);
     String credentials = Credentials.basic(getClientId(), clientSecret);
 
-    RequestBody formBody = new FormBody.Builder()
+    FormBody formBody = new FormBody.Builder()
         .add("grant_type", "authorization_code")
         .add("code", code)
         .add("redirect_uri", redirectUri)
@@ -70,7 +66,10 @@ public class PingIdentityClient implements IdpClient {
         throw new OAuth2Exception("Token exchange failed with Ping Identity, status: " + response.code());
       }
 
-      Map<String, Object> tokenResponse = objectMapper.readValue(response.body().string(), new TypeReference<>() {});
+      Map<String, Object> tokenResponse = objectMapper.readValue(
+          response.body().string(),
+          new TypeReference<>() {}
+                                                                );
 
       return new TokenResponse(
           (String) tokenResponse.get("id_token"),
@@ -78,19 +77,16 @@ public class PingIdentityClient implements IdpClient {
           (String) tokenResponse.get("refresh_token"),
           ((Number) tokenResponse.get("expires_in")).longValue()
       );
+
     } catch (IOException e) {
       throw new OAuth2Exception("Token exchange failed due to network error", e);
     }
   }
 
-  public TokenResponse exchangeCodeFallback(String code, String codeVerifier, String redirectUri, Throwable ex) {
+  public TokenResponse exchangeCodeFallback(String code, String codeVerifier,
+                                            String redirectUri, Throwable ex) {
     log.error("Ping Identity circuit breaker is open during token exchange.", ex);
     throw new OAuth2Exception("Ping Identity is temporarily unavailable.", ex);
-  }
-
-  @Override
-  public Jwt validateIdToken(String idToken) {
-    return jwtDecoder.decode(idToken);
   }
 
   @Override
