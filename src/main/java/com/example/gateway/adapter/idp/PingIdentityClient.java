@@ -61,7 +61,7 @@ public class PingIdentityClient implements IdpClient {
         .post(formBody)
         .build();
 
-    try (Response response = httpClient.newCall(request).execute()) {
+    try (Response response = defaultOkHttpClient.newCall(request).execute()) {
       if (!response.isSuccessful() || response.body() == null) {
         throw new OAuth2Exception("Token exchange failed with Ping Identity, status: " + response.code());
       }
