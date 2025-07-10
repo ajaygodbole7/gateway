@@ -1,6 +1,5 @@
 package com.example.gateway.security.filter;
 
-import com.example.gateway.domain.entity.SessionData;
 import com.example.gateway.service.SessionService;
 import com.example.gateway.util.CookieUtil;
 import jakarta.servlet.FilterChain;
@@ -19,76 +18,51 @@ import java.io.IOException;
 import java.util.Optional;
 
 /**
- * Session Authentication Filter
- *
- * Validates session cookies and populates Spring Security context
+ * A simple and robust filter that authenticates users based on the app_session cookie.
+ * It delegates all session validation logic to the SessionService.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class SessionAuthenticationFilter extends OncePerRequestFilter {
 
-  private final SessionService sessionService;
   private static final String SESSION_COOKIE_NAME = "app_session";
+  private final SessionService sessionService;
 
   @Override
-  protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
-                                  FilterChain filterChain) throws ServletException, IOException {
+  protected void doFilterInternal(
+      HttpServletRequest request,
+      HttpServletResponse response,
+      FilterChain filterChain
+                                 ) throws ServletException, IOException {
+
     Optional<Cookie> sessionCookie = CookieUtil.getCookie(request, SESSION_COOKIE_NAME);
 
     if (sessionCookie.isPresent()) {
       String sessionId = sessionCookie.get().getValue();
-
       try {
-        // Get session data
-        Optional<String> encryptedData = sessionService.getSessionData(sessionId);
-        if (encryptedData.isEmpty()) {
-          invalidateAndClear(sessionId, response);
-          filterChain.doFilter(request, response);
-          return;
+        // Delegate the entire authentication process to the SessionService.
+        // This single method call handles L1/L2 caching, Redis interaction,
+        // fingerprint validation, and selective TTL refresh.
+        Optional<Authentication> authOptional = sessionService.authenticateBySessionId(sessionId, request);
+
+        if (authOptional.isPresent()) {
+          // If the service returns a valid Authentication object, populate the context.
+          SecurityContextHolder.getContext().setAuthentication(authOptional.get());
+          log.trace("SessionAuthenticationFilter: Successfully authenticated session {}", sessionId);
+        } else {
+          // The session was invalid (expired, not found, fingerprint mismatch, etc.).
+          // SessionService has already invalidated it. We just need to clear the cookie.
+          log.debug("SessionAuthenticationFilter: Invalid session ID provided. Clearing cookie.");
+          CookieUtil.clearSessionCookie(response);
         }
-
-        // Decrypt session data
-        String decryptedData;
-        try {
-          decryptedData = encryptionService.decrypt(encryptedData.get());
-        } catch (Exception e) {
-          log.error("FATAL: Session decryption failed for session: {}", sessionId, e);
-          invalidateAndClear(sessionId, response);
-          filterChain.doFilter(request, response);
-          return;
-        }
-
-        // Validate token with IdP
-        SessionData sessionData = objectMapper.readValue(decryptedData, SessionData.class);
-        Optional<TokenValidationResult> validationResult = validateToken(sessionData);
-
-        if (validationResult.isEmpty()) {
-          log.warn("Token validation failed for session: {}", sessionId);
-          SecurityEventLogger.logTokenValidationFailure(
-              sessionData.userPrincipal().userId(),
-              "Token inactive or revoked"
-                                                       );
-          invalidateAndClear(sessionId, response);
-          filterChain.doFilter(request, response);
-          return;
-        }
-
-        // Set authentication
-        Authentication auth = createAuthentication(sessionData.userPrincipal());
-        SecurityContextHolder.getContext().setAuthentication(auth);
-
       } catch (Exception e) {
-        log.error("Unexpected error during session authentication", e);
-        invalidateAndClear(sessionId, response);
+        // Catch any unexpected errors from the session service to prevent filter chain failure.
+        log.error("An unexpected error occurred during session authentication.", e);
+        CookieUtil.clearSessionCookie(response);
       }
     }
 
     filterChain.doFilter(request, response);
-  }
-
-  private void invalidateAndClear(String sessionId, HttpServletResponse response) {
-    sessionService.invalidateSession(sessionId);
-    CookieUtil.clearSessionCookie(response);
   }
 }

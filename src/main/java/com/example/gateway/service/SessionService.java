@@ -235,4 +235,21 @@ public class SessionService {
         if (sessionId == null || sessionId.length() < 8) return "INVALID";
         return sessionId.substring(0, 8) + "...";
     }
+    /**
+     * Refreshes the Time-To-Live (TTL) of an active session to implement the sliding window.
+     * This should be called after any successful authenticated request.
+     *
+     * @param sessionId The ID of the session to refresh.
+     */
+    public void refreshSession(String sessionId) {
+        if (!isValidSessionId(sessionId)) {
+            return;
+        }
+        String sessionKey = SESSION_KEY_PREFIX + sessionId;
+        int slidingWindowMinutes = properties.security().session().slidingWindowMinutes();
+
+        // This is a lightweight command that just updates metadata in Redis.
+        redisTemplate.expire(sessionKey, slidingWindowMinutes, TimeUnit.MINUTES);
+        log.trace("Refreshed session TTL for: {}", maskSessionId(sessionId));
+    }
 }
