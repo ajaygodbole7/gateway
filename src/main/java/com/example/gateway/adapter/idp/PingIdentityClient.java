@@ -10,6 +10,7 @@ import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.*;
+import okhttp3.FormBody.Builder;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
@@ -26,7 +27,8 @@ public class PingIdentityClient implements IdpClient {
 
   private final ApplicationProperties properties;
   private final AzureKeyVaultClient keyVaultClient;
-  private final OkHttpClient defaultOkHttpClient;
+  @Qualifier("defaultOkHttpClient")
+  private final OkHttpClient defaultHttpClient;
   private final ObjectMapper objectMapper;
 
   @Override
@@ -47,7 +49,7 @@ public class PingIdentityClient implements IdpClient {
     String clientSecret = keyVaultClient.getSecret(CLIENT_SECRET_NAME);
     String credentials = Credentials.basic(getClientId(), clientSecret);
 
-    FormBody formBody = new FormBody.Builder()
+    FormBody formBody = new Builder()
         .add("grant_type", "authorization_code")
         .add("code", code)
         .add("redirect_uri", redirectUri)
@@ -55,20 +57,19 @@ public class PingIdentityClient implements IdpClient {
         .build();
 
     Request request = new Request.Builder()
-        .url(properties.auth().ping().tokenUri())
+        .url(properties.auth().ping().tokenUri()) // Using properties
         .header("Authorization", credentials)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .post(formBody)
         .build();
 
-    try (Response response = defaultOkHttpClient.newCall(request).execute()) {
+    try (Response response = defaultHttpClient.newCall(request).execute()) {
       if (!response.isSuccessful() || response.body() == null) {
         throw new OAuth2Exception("Token exchange failed with Ping Identity, status: " + response.code());
       }
 
       Map<String, Object> tokenResponse = objectMapper.readValue(
-          response.body().string(),
-          new TypeReference<>() {}
+          response.body().string(), new TypeReference<>() {}
                                                                 );
 
       return new TokenResponse(
@@ -83,8 +84,7 @@ public class PingIdentityClient implements IdpClient {
     }
   }
 
-  public TokenResponse exchangeCodeFallback(String code, String codeVerifier,
-                                            String redirectUri, Throwable ex) {
+  public TokenResponse exchangeCodeFallback(String code, String codeVerifier, String redirectUri, Throwable ex) {
     log.error("Ping Identity circuit breaker is open during token exchange.", ex);
     throw new OAuth2Exception("Ping Identity is temporarily unavailable.", ex);
   }
