@@ -1,39 +1,7 @@
-# ===================================================================
-# SPRING BOOT CORE CONFIGURATION
-# ===================================================================
-spring:
-  application:
-    name: security-gateway
-  threads:
-    virtual:
-      enabled: true # Enables Java 21 Virtual Threads for higher throughput
-
-# ===================================================================
-# SERVER CONFIGURATION
-# ===================================================================
-server:
-  port: 8080
-  # Enables Gzip compression for API responses to reduce payload size
-  compression:
-    enabled: true
-  # Prefers HTTP/2 for better performance if supported by the client and infrastructure
-  http2:
-    enabled: true
-  # Security setting to prevent leaking internal error details to clients
-  error:
-    include-message: never
-    include-stacktrace: never
-    include-binding-errors: never
-
-# ===================================================================
-# CUSTOM APPLICATION PROPERTIES (Mapped to ApplicationProperties.java)
-# ===================================================================
 app:
-  # --- Frontend Configuration ---
   frontend:
     url: ${FRONTEND_URL:http://localhost:3000}
-
-  # --- User Authentication Provider Configuration ---
+  
   auth:
     ping:
       client-id: ${PING_CLIENT_ID}
@@ -53,19 +21,16 @@ app:
       - /profile
       - /settings
       - /admin
-    code-verifier-length: 64
 
-  # --- Gateway's M2M Token Management Configuration ---
   m2m:
     refresh:
       enabled: ${M2M_REFRESH_ENABLED:true}
-      rate: ${M2M_REFRESH_RATE_MS:60000} # 1 minute
-      initial-delay: ${M2M_REFRESH_INITIAL_DELAY_MS:60000} # 1 minute
+      rate: ${M2M_REFRESH_RATE:60s}
+      initial-delay: ${M2M_REFRESH_INITIAL_DELAY:60s}
     retry:
       max-attempts: 15
-      delay-ms: 300
+      delay: 300ms
 
-  # --- Security Feature Configuration ---
   security:
     auth:
       max-failures: 5
@@ -73,88 +38,40 @@ app:
     session:
       sliding-window-minutes: 30
       absolute-timeout-hours: 8
+    required-acr: null
+    required-amr: []
+    max-auth-age: null
 
-  # --- Outbound HTTP Client Configuration ---
-  okhttp:
+  http:
     client:
       max-idle-connections: 20
       keep-alive-duration-minutes: 5
       max-requests: 100
       max-requests-per-host: 20
 
-  # --- Azure Service Integration ---
   azure:
     key-vault:
       uri: ${AZURE_KEYVAULT_URI}
 
-# ===================================================================
-# REDIS CONFIGURATION
-# ===================================================================
-redis:
-  mode: ${REDIS_MODE:standalone}
-  host: ${REDIS_HOST:localhost}
-  port: ${REDIS_PORT:6379} # Changed default to standard non-TLS port for local dev
-  ssl:
-    enabled: ${REDIS_SSL_ENABLED:false} # Default to false for local dev
-  cluster:
-    nodes: ${REDIS_CLUSTER_NODES:} # e.g., "host1:6379,host2:6379"
-  timeout: 2000ms # Client-side command timeout
+  redis:
+    mode: ${REDIS_MODE:standalone}
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6380}
+    ssl:
+      enabled: ${REDIS_SSL_ENABLED:true}
+    cluster:
+      nodes: ${REDIS_CLUSTER_NODES:}
+      max-redirects: 3
+    timeout: 2s
+    pool:
+      max-active: 16
+      max-idle: 8
+      min-idle: 4
+      max-wait: 2s
+      time-between-eviction-runs: 30s
 
-# ===================================================================
-# RESILIENCE (CIRCUIT BREAKER) CONFIGURATION
-# ===================================================================
-resilience4j:
-  circuitbreaker:
-    configs:
-      default:
-        registerHealthIndicator: true
-        slidingWindowType: COUNT_BASED
-        slidingWindowSize: 20
-        minimumNumberOfCalls: 10
-        permittedNumberOfCallsInHalfOpenState: 3
-        automaticTransitionFromOpenToHalfOpenEnabled: true
-        waitDurationInOpenState: 30s
-        failureRateThreshold: 50
-        eventConsumerBufferSize: 10
-    instances:
-      keyVault:
-        baseConfig: default
-        waitDurationInOpenState: 20s
-        slowCallDurationThreshold: 1s
-        slowCallRateThreshold: 70
-      pingIdentity:
-        baseConfig: default
-        waitDurationInOpenState: 60s
-        slowCallDurationThreshold: 3s
-        failureRateThreshold: 30
-      microsoftEntra:
-        baseConfig: default
-        waitDurationInOpenState: 60s
-        slowCallDurationThreshold: 3s
-        failureRateThreshold: 30
-
-# ===================================================================
-# MANAGEMENT & OBSERVABILITY (ACTUATOR) CONFIGURATION
-# ===================================================================
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics,prometheus,circuitbreakers
-      base-path: /actuator
-  endpoint:
-    health:
-      show-details: when_authorized
-  health:
-    circuitbreakers:
-      enabled: true
-
-# ===================================================================
-# API DOCUMENTATION (SPRINGDOC / SWAGGER) CONFIGURATION
-# ===================================================================
-springdoc:
-  api-docs:
-    path: /v3/api-docs
-  swagger-ui:
-    path: /swagger-ui.html
-    enabled: true
+  cache:
+    session:
+      local-ttl: 10s
+      max-size: 10000
+      refresh-threshold: 0.5

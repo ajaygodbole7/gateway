@@ -25,8 +25,7 @@ public class EntraUserTokenValidator {
 
   private static final String ENTRA_VALIDATOR_BREAKER = "microsoftEntra";
 
-  @Qualifier("defaultOkHttpClient")
-  private final OkHttpClient httpClient;
+  private final OkHttpClient defaultOkHttpClient;
 
   @Value("${app.auth.entra.validation-uri}")
   private String validationUri;
@@ -49,7 +48,7 @@ public class EntraUserTokenValidator {
         .get()
         .build();
 
-    try (Response response = httpClient.newCall(request).execute()) {
+    try (Response response = defaultOkHttpClient.newCall(request).execute()) {
       if (response.isSuccessful()) {
         log.debug("Entra token validation successful (downstream API returned 2xx).");
         return Optional.of(userPlaintextToken);
