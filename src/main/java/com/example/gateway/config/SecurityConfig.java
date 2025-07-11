@@ -64,7 +64,8 @@ public class SecurityConfig {
                          UsernamePasswordAuthenticationFilter.class)
         // Require authentication for all these endpoints
         .authorizeHttpRequests(authorize -> authorize.anyRequest().authenticated())
-        // Return 401 error if not authenticated
+        // When auth fails, use our JSON error handler instead of Spring's default HTML
+        // This ensures API clients get JSON errors, not HTML login pages
         .exceptionHandling(exceptions ->
                                exceptions.authenticationEntryPoint(delegatedAuthenticationEntryPoint));
 
