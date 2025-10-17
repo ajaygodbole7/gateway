@@ -1,4 +1,3 @@
-I'll create a comprehensive markdown table of all the key design decisions from our PII protection implementation.
 
 | Area | Summary                           | Decision                                                          | Rationale |
 |------|-----------------------------------|-------------------------------------------------------------------|-----------|
