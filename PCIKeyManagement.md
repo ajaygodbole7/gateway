@@ -386,7 +386,7 @@ xargs -I{} az keyvault secret set --vault-name <kv> --name pii-pepper --value "{
 
 ## 18) FAQ (Fast)
 
-* **Why Option A over caching old keys?**
+* **Why use current key over caching old keys?**
   Less key residency in memory → safer if a dump occurs. The slight latency on first decrypt of an old row is acceptable.
 
 * **Is disk/TDE enough?**
