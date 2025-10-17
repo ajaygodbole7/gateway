@@ -237,17 +237,38 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
+  participant FE as Frontend
+  participant API as Spring Boot API
+  participant DB as PostgreSQL
+  participant ENC as Encryption Service
+  participant KP as Key Provider (AKV)
+
   FE->>API: GET /api/users/{id}
+  note right of API: (This is a simplified diagram for a READ path.<br/>Normally, the API would return masked data.)
+  
   API->>DB: SELECT * FROM users WHERE id=...
-  DB-->>API: row with ssn_encrypted (Base64([verLen|ver|iv|ct]))
+  DB-->>API: Fetches row with encrypted PII
+
+  note over API,DB: The ssn_encrypted field contains:<br/>Base64([verLen|ver|iv|ct])
+
   API->>ENC: decrypt(ssn_encrypted, "users.ssn")
+  
+  activate ENC
   ENC->>ENC: parse header -> ver, iv, ct
+  
   alt ver != current
-    ENC->>KP: getDekByVersion(ver)   (on-demand from AKV)
+    ENC->>KP: getDekByVersion(ver)
+    note left of KP: On-demand fetch from<br/>Azure Key Vault
   end
-  ENC->>ENC: GCM_DEC(dek, iv, aad="users.ssn", ct)  (integrity check)
-  ENC-->>API: plaintext (if needed by business use case)
-  API-->>FE: (normally masked-only; full reveal requires step-up auth)
+  
+  ENC->>ENC: AES-GCM_DEC(dek, iv, aad="users.ssn", ct)
+  note right of ENC: AAD provides integrity check.<br/>Decrypt fails if AAD doesn't match.
+  
+  ENC-->>API: plaintext (transient, in-memory only)
+  deactivate ENC
+  
+  API-->>FE: UserResponse (masked-only by default)
+  note left of FE: Full PII reveal is a separate flow that uses decryption keys
 ```
 
 ---
