@@ -22,30 +22,34 @@ Companion doc: **Key Management SOP (Option A: on-demand historical key fetch)**
 ```mermaid
 flowchart LR
   FE[Browser / Frontend] -- TLS --> API[Spring Boot API]
+
   subgraph Cross-Cutting Guards
+    direction LR
     URLG[URL PII Guard]
     RSPG[Response PII Guard]
     RL[Rate Limits]
     REAUTH[Recent Re-Auth JWT auth_time]
-    AUD[AOP Audit -> audit_log]
+    AUD[AOP Audit]
     LOG[Log Sanitizer]
   end
-  API --> URLG
-  API --> RSPG
-  API --> RL
-  API --> REAUTH
-  API --> AUD
-  API --> LOG
+
+  API --> URLG & RSPG & RL & REAUTH & AUD & LOG
 
   API --> SVC[User Service]
   SVC --> ENC[Encryption Service]
-  ENC --> KP[EncryptionKeyProvider -uses Azure Key Vault]
+  
+  %% The fix is here: quotes around the text containing <br/> %%
+  ENC --> KP["Key Provider<br/>(Azure Key Vault)"]
+  
   SVC --> DB[(PostgreSQL 15+)]
 
-  DB -.->|"users table"| U1> *_encrypted = Base64([verLen|ver|iv|ct]) ]
-  DB -.->|"indexed search"| U2> *_hash = Base64(HMAC-SHA-256(normalized, pepper)) ]
-  DB -.->|"masked UI"| U3> *_last4 (derived) ]
-  DB -.->|"append-only"| AUDT> audit_log ]
+  subgraph "Database Contents"
+    direction TB
+    DB -.->|"users table"| U1["*_encrypted = Base64([verLen|ver|iv|ct])"]
+    DB -.->|"indexed search"| U2["*_hash = Base64(HMAC-SHA-256(normalized, pepper))"]
+    DB -.->|"masked UI"| U3["*_last4 (derived)"]
+    DB -.->|"append-only"| AUDT["audit_log"]
+  end
 ```
 
 
