@@ -1,10 +1,6 @@
 # PII/PCI Protection System Design
 ## Application-Layer Encryption Architecture
 
-**Version:** 1.0  
-**Audience:** Security Architects, System Architects, Senior Developers
-
----
 
 ## Executive Summary
 

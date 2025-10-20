@@ -44,4 +44,4 @@
 | **Compliance** | GDPR                              | Support data portability and erasure                              | Enables right-to-access and right-to-be-forgotten |
 | **Compliance** | Prohibited data                   | Never store CVV, PIN, or magstripe                                | PCI DSS requirement, reduces compliance scope |
 
-This table captures all 42 key design decisions that shape the security, performance, and compliance posture of the PII protection system.
+This table captures all key design decisions that drive the security, performance, and compliance posture of the PII protection system.
