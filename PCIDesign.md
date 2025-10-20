@@ -383,16 +383,6 @@ Body: { "ssn": "123-45-6789" }
 
 ---
 
-## 12) Troubleshooting & edge cases
-
-* **Decrypt fails with “auth/tag mismatch”:** wrong AAD or wrong DEK version. Check header `ver` and AAD constant.
-* **Search returns nothing but you’re sure it exists:** confirm normalization rules (digits-only) match both at write and at search.
-* **“Response contains forbidden PII field” error:** remove plaintext properties from responses; return masked fields only.
-* **Latency spikes on first read after rotation:** expected single AKV call per historical version; monitor & retry with backoff.
-* **JVM crash concern:** disable heap/core dumps in prod; rotate DEK if a dump may contain keys.
-
----
-
 ## 13) Quick reference (cheat-sheet)
 
 * **Header**: `Base64([verLen|ver|iv|ct])`
