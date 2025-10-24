@@ -407,7 +407,7 @@ Body: { "ssn": "123-45-6789" }
 * **If in doubt, don’t log it**—use request IDs and masked summaries.
 
 
-Here’s the short version, tailored to our design goals (field-level, app-owned crypto with AKV):
+## Why the Security review recommended options don't work
 
 ## Why PostgreSQL TDE (or storage-level encryption) isn’t enough
 
@@ -418,7 +418,7 @@ Here’s the short version, tailored to our design goals (field-level, app-owned
 * **No AAD/context binding.** You can’t bind ciphertext to a column/semantic (our AES-GCM + AAD does), so cross-column misuse isn’t detected.
 * **No search/masking help.** You still need an app-side strategy for masked display and safe search—TDE gives neither.
 
-## Why `pgcrypto` for column encryption is a poor fit here
+## Why `pgcrypto` for column encryption is a poor fit
 
 * **Key management is awkward and risky.** You must pass keys into SQL or store them server-side. That leaks into query text/params, pg_stat_statements, dumps, or SQL logs unless you’re extremely careful.
 * **Same trust boundary as the DB.** Decryption happens in the database process. DBAs and server-side code paths can access plaintext—failing the “keys separate from data” principle auditors look for.
